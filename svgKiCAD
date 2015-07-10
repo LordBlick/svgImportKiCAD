@@ -1,0 +1,498 @@
+#!/usr/bin/python2
+# -*- encoding: utf-8 -*-
+# -*- coding: utf-8 -*-
+# -*- tabstop: 4 -*-
+
+from os import path as ph, rename as mv
+import re
+from clDrawSVG import drawPolygon, DrawPolyPath, Pnt, Poly
+from pcbnew import LoadBoard
+
+class KiCADimportSVG:
+	def __init__(it):
+		it.uiInit()
+		it.appStart()
+
+	bkFn = lambda it, fileNamePCB: "%s-svgbk.%s" % tuple(fileNamePCB.rsplit('.', 1))
+	uiFn = lambda it, fileName: fileName.replace(ph.expanduser('~'), '~')
+
+	def uiInit(it):
+		from uiImportSVG import uiSvgImport
+		ui = it.ui = uiSvgImport()
+
+		ui.buttonClear.connect("clicked", lambda x: ui.logView.clear_text())
+		ui.checkDebugDraw.connect("clicked", it.drawDebug)
+		ui.buttonOpen.connect("clicked", lambda x: it.dlgFileName('SVG'))
+		ui.buttonReOpen.connect("clicked", lambda xargs: it.appSvgLoad())
+		ui.buttonFileToSave.connect("clicked", lambda x: it.dlgFileName('PCB'))
+		ui.buttonSave.connect("clicked", lambda x: it.appCommitToPCB())
+		ui.buttonRestore.connect("clicked", lambda x: it.appRestore())
+		ui.buttonExit.connect("clicked", lambda x: it.Exit())
+		ui.buttonTest.connect("clicked", lambda x: it.Test())
+
+		ui.mainWindow.connect("destroy", lambda x: it.Exit())
+		ui.mainWindow.connect("delete_event", it.appExitEvent)
+		ui.uiHideDlg(ui.dlgPath, bStore=False)
+		return
+
+	def errReport(it, txt):
+		ui = it.ui
+		ui.logView.insert_end(("Script Version: v.%0.2f. Error report:\n"+txt) % ui.version)
+
+	def drawDebug(it, check):
+		setattr(it.ui.Display.drawer, 'debug', check.get_active())
+		it.ui.Display.refresh()
+
+	def call(it, cmd):
+		from shlex import split as shSplit
+		import subprocess
+		proc = subprocess.Popen(
+			shSplit(cmd),
+			stdout=subprocess.PIPE,
+			stderr=subprocess.STDOUT)
+		result, dummy_stderr = proc.communicate()
+		return proc.returncode, result
+
+	def timeThread(it):
+		return True
+
+	def appClickSelect(it, clPt, lsState):
+		ui = it.ui
+		it.click = clPt, lsState
+		it.drag = clPt
+		msg = "Click at %s" % (clPt)
+		if lsState:
+			msg += "; State: %s" % '+'.join(lsState)
+		print(msg)
+		bEditClick = False
+		selPtRadius = ui.Display.clickRadius
+		lsPtSel = Poly()
+		if it.Edit:
+			if isinstance(it.Edit, DrawPolygon):
+				lsPtSel = it.Edit.lsPtAround(clPt, selPtRadius)
+				if lsPtSel:
+					tvDP = ui.dlgEditDP.dcWgt['PointsetDP']
+					bEditClick = True
+					it.Edit.lsSelPt = lsPtSel
+					#it.Edit.bLoaded = False
+					for idPt in lsPtSel:
+						ts = tvDP.get_selection()
+						if ts.path_is_selected(idPt):
+							ts.unselect_path(idPt)
+						else:
+							ts.select_path(idPt)
+					#it.Edit.bLoaded = True
+			elif it.Edit.isPtIn(clPt):
+				bEditClick = True
+		if bEditClick:
+			msg = "it.Edit click"
+			if lsPtSel:
+				msg += " - Around Points: %s" % lsPtSel
+			else:
+				msg += "."
+			print(msg)
+		lsDrawObj = ui.Display.drawer.clickedObj(clPt)
+		lsDP = ui.Display.drawer.lsDP(clPt, selPtRadius)
+		for idx, (draw, prim) in enumerate(lsDrawObj):
+			prim_idx =  draw.prims.index(prim)
+			print("DrawElement[%i]'%s' click in DrawPrim[%i]'%s'." % (idx, draw.ID, prim_idx, prim.ID))
+			for idp, prim_ in enumerate(draw.prims):
+				prim_.bEdit = (idp==prim_idx)
+			ui.uiShowDlg(ui.dlgPath)
+			return
+			#print("draw.level:%i not:%s" % (draw.level, str(not(draw.level))))
+		ui.uiHideDlg(ui.dlgPath)
+
+	#def appLoadPrimDraw(it, prim):
+
+	def initVars(it):
+		ui = it.ui
+		gtk = ui.apw.gtk
+		pango = ui.apw.pango
+		viewBuff = ui.logView.get_buffer()
+		it.tgDbgErr = viewBuff.create_tag('error', weight = pango.WEIGHT_BOLD, foreground = 'red')
+		it.tgDbgOK = viewBuff.create_tag('line_number', weight = pango.WEIGHT_BOLD)
+		it.tgDbgOK.set_property('foreground-gdk',  gtk.gdk.Color('#0F0'))
+		it.tgTx = viewBuff.create_tag('output', weight = pango.WEIGHT_BOLD, foreground = 'orange')
+		it.ui.Display.drawer.clicked = it.appClickSelect
+		#it.unit_convert = {
+			#None: 1,           # Default unit (same as pixel)
+			#'px': 1,           # px: pixel. Default SVG unit
+			#'em': 10,          # 1 em = 10 px FIXME
+			#'ex': 5,           # 1 ex =  5 px FIXME
+			#'in': 96,          # 1 in = 96 px
+			#'mils': 0.096,     # 1 mils = 96/1000 px
+			#'cm': 96 / 2.54,   # 1 cm = 1/2.54 in
+			#'mm': 96 / 25.4,   # 1 mm = 1/25.4 in
+			#'pt': 96 / 72.0,   # 1 pt = 1/72 in
+			#'pc': 96 / 6.0,    # 1 pc = 1/6 in
+			#'%' :  1 / 100.0   # 1 percent
+			#}
+		#it.reUnit = r'em|ex|px|in|cm|mm|pt|pc|%'
+		reNumber = r'[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?'
+		it.pathCmd = 'MmZzLlHhVvCcSsQqTtAa'
+		it.rexPathParse = re.compile(reNumber + r"|\s*[%s]\s*" % it.pathCmd,  re.U)
+		it.rexDevType = re.compile("""\{(?P<DevLine>(Rl)|(Vb))
+										(?P<DevMarkt>(St)|(Mg)|(Bt)|(Ut))
+										(?P<DevVer>\d.\d)
+										(?P<DevLang>(PL)|(EN)|(LT))\}.""", re.X | re.U)
+		from gobject import timeout_add as addTick
+		it.tickLogic = addTick(200, it.timeThread)
+		it.scale = 1/.0096
+		it.Edit = None
+
+	def appSvgParse(it, svgFileName):
+		from xml.dom.minidom import parse as mdparse
+		from geometry import Bezier
+		from Colors import floatColorHTML
+		
+		ui = it.ui
+		_pr = ui.logView.insert_end
+		svgTree = mdparse(svgFileName)
+		arcErr = 'Arc parsing failure'
+		if not svgTree:
+			_pr("There\'s some I/O errors occured in parsing %s…\n" % svgFileName)
+			return
+		ui.Display.drawer.clear()
+		svgMain = svgTree.documentElement
+		svgPaths = svgMain.getElementsByTagName('path')
+		for idx, dpath in enumerate(svgPaths):
+			if dpath.hasAttribute('style'):
+				style = dpath.getAttribute('style').strip(';')
+			elif dpath.getParent.hasAttribute('style'):
+				style = dpath.getParent.getAttribute('style').strip(';')
+			else:
+				continue
+			dcStyle = dict(map(lambda styleAttr: map(lambda s: s.strip(), styleAttr.split(':')), style.split(';')))
+			fill, stroke = floatColorHTML(dcStyle.get('fill')), floatColorHTML(dcStyle.get('stroke'))
+			strokew = dcStyle.get('stroke-width')
+			if fill and(not(stroke)):
+				mode='polygon'
+			elif stroke and(not(fill)):
+				mode='path'
+			else:
+				mode=''
+			#_pr("fill:%s; stroke:%s\n" % (fill, stroke))
+			_pr("Found path with style: '%s'\n" % dcStyle)
+			if not(dpath.hasAttribute('d')):
+				continue
+			lsItems = Poly()
+			lsPathD = re.findall(it.rexPathParse, dpath.getAttribute('d'))
+			lsPathD.reverse()
+			cmd = None
+			Pointer = Pnt(0,0)
+			startPnt = None
+			ptBuff = Poly()
+			while lsPathD:
+				if lsPathD[-1].strip() in it.pathCmd:
+					last_cmd = cmd
+					cmd = lsPathD.pop().strip()
+					bABS = (cmd==cmd.upper())
+					cmd = cmd.upper()
+				else:
+					if cmd is None:
+						raise ValueError("No cmd found at %d" % len(lsPathD))
+				if cmd=='M': # MoveTo
+					x, y = lsPathD.pop(), lsPathD.pop()
+					pt = Pnt(x, y)
+					if bABS:
+						Pointer = pt
+					else:
+						Pointer += pt
+					startPnt = Pointer
+					if ptBuff:
+						lsItems.append(ptBuff)
+						ptBuff = Poly()
+					ptBuff.append(Pointer)
+					cmd = 'L' # MoveTo with multiple coordinates means LineTo
+				elif cmd=='Z': # Close Path
+					#pass
+					ptBuff.append(startPnt)
+				elif cmd in 'LHV': # LineTo, Horizontal & Vertical line
+					x,y = ((0,0),  Pointer.coord())[bABS] # extra coord for H,V
+					if cmd in 'LH': x = lsPathD.pop()
+					if cmd in 'LV': y = lsPathD.pop()
+					pt = Pnt(x, y)
+					if not(bABS): pt += Pointer
+					ptBuff.append(pt)
+					Pointer = pt
+				elif cmd in 'CQ':
+					dimension = {'Q':3, 'C':4}
+					bezierPnts = Poly()
+					bezierPnts.append(Pointer)
+					for i in range(1,dimension[cmd]):
+						x = lsPathD.pop()
+						y = lsPathD.pop()
+						pt = Pnt(x, y)
+						if not bABS:
+							pt += Pointer
+						bezierPnts.append(pt)
+					lsItems.append(Bezier(bezierPnts))
+					Pointer = pt
+				elif cmd in 'TS':
+					nbpts = {'T':1, 'S':2}  # number of points to read
+					ctrlpt = {'T':1, 'S':2}  # the control point, from previous Bezier to mirror
+					last = {'T': 'QT', 'S':'CS'}  # last cmd control
+					bezierPnts = Poly()
+					bezierPnts.append(Pointer)
+					pt0 = (Pointer, lsItems[-1].control_point(ctrlpt[cmd]))[last_cmd in last[cmd]]
+					pt1 = Pointer
+					bezierPnts.append(pt1 + pt1 - pt0)  # Symetrical of pt1 against pt0
+					for i in range(0,nbpts[cmd]):
+						x = lsPathD.pop()
+						y = lsPathD.pop()
+						pt = Pnt(x, y)
+						if not bABS: pt += Pointer
+						bezierPnts.append(pt)
+					lsItems.append(Bezier(bezierPnts))
+					Pointer = pt
+				elif cmd=='A':
+					rx = lsPathD.pop()
+					ry = lsPathD.pop()
+					xrot = lsPathD.pop()
+					flags = lsPathD.pop().strip()  # Arc flags are not necesarily sepatated numbers
+					large_arc_flag = flags[0]
+					if large_arc_flag not in '01':
+						_pr("%s - strange large_arc_flag '%s'\n" % (arcErr, large_arc_flag))
+						break
+					if len(flags) > 1:  flags = flags[1:].strip()
+					else:               flags = lsPathD.pop().strip()
+					sweep_flag = flags[0]
+					if sweep_flag not in '01':
+						_pr("%s - strange sweep_flag '%s'\n" % (arcErr, sweep_flag))
+						break
+					if len(flags) > 1:  x = flags[1:]
+					else:               x = lsPathD.pop()
+					y = lsPathD.pop()
+					# TODO
+					_pr("ARC:\n\trx:%s, ry:%s, xrot:%s, large_arc_flag:%s, sweep_flag:%s, x:%s, y:%s\n" %
+						(rx, ry, xrot, large_arc_flag, sweep_flag, x, y))
+					#lsItems.append(
+						#Arc(rx, ry, xrot, large_arc_flag, sweep_flag, Pnt(x, y)))
+				else:
+					lsPathD.pop()
+			if ptBuff:
+				lsItems.append(ptBuff)
+				del(ptBuff)
+			newPoly = None
+			p_min = p_max = lsItems[0][0]
+			for poly in lsItems:
+				for pTst in poly:
+					p_min = pTst.min_(p_min)
+					p_max = pTst.max_(p_max)
+			fit_scale = (p_max-p_min).min_scale(Pnt(ui.FitW.get_value(), ui.FitH.get_value()))
+			for idi, ditem in enumerate(lsItems):
+				#_pr("\tItem[%i]:%s\n" % (idi, str(ditem)))
+				if not(False in(map(lambda Cl: isinstance(Cl, Pnt), ditem))):
+					if not(newPoly):
+						newPoly = DrawPolyPath()
+						newPoly.ID = "Poly#%i" % idx
+						ui.Display.drawer.draws.append(newPoly)
+					newPrim = drawPolygon([pt*fit_scale for pt in ditem])
+					#_pr("\tprim[%i]:%s\n" % (idi, str(newPrim.points)))
+					newPrim.fillColorA = tuple(fill)
+					newPrim.ID = "Prim#%i-%i" % (idx, idi)
+					newPoly.addPrim(newPrim)
+					newPrim.update()
+			if newPoly:
+				newPoly.update_bounds(updatePrims=True)
+		ui.Display.reset_drawer()
+		ui.Display._reshape()
+		ui.Display.redraw()
+
+	def appDropFilename(it):
+		it.cfg.pop('lastSvgFile')
+		it.appUpdateFilename()
+
+	def appUpdateFilename(it, bUpEmptyTxt=True):
+		from pcbnew import BOARD
+		ui = it.ui
+		fileNameSVG = it.cfg['lastSvgFile'] if (hasattr(it, 'cfg')\
+				and(it.cfg.has_key('lastSvgFile'))) else ''
+		if bUpEmptyTxt or(fileNameSVG):
+			ui.txtFilenameSVG.set_text(fileNameSVG.replace(ph.expanduser('~'), '~'))
+		bFn = bool(fileNameSVG)
+		ui.buttonReOpen.set_sensitive(bFn)
+		fileNamePCB = it.cfg['lastPcbFile'] if (hasattr(it, 'cfg')\
+				and(it.cfg.has_key('lastPcbFile'))) else ''
+		if bUpEmptyTxt or(fileNamePCB):
+			ui.txtFilenamePCB.set_text(fileNamePCB.replace(ph.expanduser('~'), '~'))
+		bFn = bool(fileNamePCB)
+		ui.buttonSave.set_sensitive(bFn)
+		if bFn:
+			fileNameBk = it.bkFn(fileNamePCB)
+			bFn = ph.isfile(fileNameBk)
+			#print("Orzeszek[%s]\n\t'%s'" %(str(bFn), fileNameBk))
+			try:
+				bkPCB = LoadBoard(fileNameBk)
+				bFn = isinstance(bkPCB, BOARD)
+				del(bkPCB)
+			except Exception as err:
+				#print("Robaczki")
+				bFn = False
+		ui.buttonRestore.set_sensitive(bFn)
+
+	def appRestore(it):
+		ui = it.ui
+		uif = it.uiFn
+		if it.cfg.has_key('lastPcbFile'):
+			fileNamePCB = it.cfg['lastPcbFile']
+			fileNameBk = it.bkFn(fileNamePCB)
+			if ph.isfile(fileNameBk):
+				mv(fileNameBk, fileNamePCB)
+				ui.logView.insert_end("Restored file:\n\t'%s'\nFrom file:\n\t'%s'\n" %\
+					(uif(fileNamePCB), uif(fileNameBk)))
+				it.appUpdateFilename()
+
+	def appCommitToPCB(it):
+		from pcbnew import ZONE_CONTAINER, LAYER_ID_COUNT, BOARD_GetStandardLayerName, FromMils
+		lsLayers = tuple([(idl, BOARD_GetStandardLayerName(idl)) for idl in range(LAYER_ID_COUNT)])
+		layerName2ID = lambda txtLayer: dict(map(reversed, lsLayers)).get(txtLayer)
+		ui = it.ui
+		_pr = ui.logView.insert_end
+		uiFn = it.uiFn
+		if it.cfg.has_key('lastPcbFile'):
+			fileNamePCB = it.cfg['lastPcbFile']
+			fileNameBk = it.bkFn(fileNamePCB)
+			uiFnPCB = uiFn(fileNamePCB)
+			try:
+				pcb = LoadBoard(fileNamePCB)
+			except Exception as err:
+				it.errReport(("Unrecognized data found. Checkout that file:\n"+\
+					"\t'%s'\nError message:\n\t%s\n") % (uiFnPCB, err))
+				return
+			lsDraws = ui.Display.drawer.draws
+			for draw in lsDraws:
+				if isinstance(draw, DrawPolyPath):
+					zone = ZONE_CONTAINER(pcb)
+					zone.SetLayer(layerName2ID(u'F.SilkS'))
+					otl = zone.Outline()
+					otl.SetLayer(layerName2ID(u'F.SilkS'))
+					for prim in draw.prims:
+						if isinstance(prim, drawPolygon):
+							#_pr("Enjoy new prm: %s\n" % prim)
+							for pnt in prim.points:
+								#_pr("Enjoy new point: (%i, %i)\n" % tuple(pnt.wxPnt()))
+								#zone.AppendCorner(pnt.wxPnt())
+								otl.AppendCorner(*pnt.wxPnt())
+							otl.CloseLastContour()
+					pcb.Add(zone)
+					zone.SetMinThickness(FromMils(.5))
+					zone.BuildFilledSolidAreasPolygons(pcb)
+			try:
+				if ph.isfile(fileNamePCB):
+					mv(fileNamePCB, fileNameBk)
+				pcb.Save(fileNamePCB)
+			except Exception as err:
+				it.errReport("Seems that you have not access to write file:\n"+\
+					"\t'%s'\nError message:\n\t%s\n" % (fileNamePCB, err))
+				it.appRestore()
+				return
+			_pr("Saved in file:\n\t'%s'\nBackup in file:\n\t'%s'\n"% \
+				(uiFn(fileNamePCB), uiFn(fileNameBk)))
+			it.appUpdateFilename()
+
+	def Test(it):
+		ui = it.ui
+		_pr = ui.logView.insert_end
+		testDraw = ui.Display.drawer.draws[0]
+		_pr("\tItem[%s]:%s\n" % (testDraw.ID, str(testDraw.bounds)))
+		for idi, testPrim in enumerate(testDraw.prims):
+			_pr("\t\tPrim[%i]:%s\n" % (idi, str(testPrim.bounds)))
+		
+
+	def appSvgLoad(it):
+		if it.cfg.has_key('lastSvgFile') and(ph.isfile(it.cfg['lastSvgFile'])):
+			fileNameSVG = it.cfg['lastSvgFile']
+			uiFn = it.uiFn(fileNameSVG)
+			it.appSvgParse(fileNameSVG)
+
+	def dlgFileName(it, Type):
+		ui = it.ui
+		apw = ui.apw
+		keyFn = "last%sFile" % Type.title()
+		lastSvgFile = it.cfg.get(keyFn)
+		lastDir = ph.dirname(lastSvgFile) if lastSvgFile else ui.apw.callDir
+		newFilename = apw.dialogChooseFile(parent=ui.mainWindow,
+			startDir=lastDir, title="Select file to read", bShowHidden=True)
+		if newFilename:
+			it.cfg[keyFn] = newFilename
+			it.appUpdateFilename()
+			if Type=='SVG':
+				it.appSvgLoad()
+
+	def appCfgLoad(it):
+		ui = it.ui
+		it.cfg = {}
+		#it.cfgFileName = ph.expanduser(ph.abspath(__file__))+'.conf'
+		cfgFn = it.cfgFileName = "%s/%s.conf" % (ui.apw.callDir, ph.basename(ph.expanduser(__file__)))
+		print("Config filename:%s" % it.uiFn(cfgFn))
+		if ph.isfile(cfgFn):
+			hFileCfg = open(cfgFn, 'r')
+			cfgData = hFileCfg.read()
+			hFileCfg.close()
+			for inputLine in cfgData.splitlines():
+				inputLine = inputLine.strip()
+				if inputLine and ':' in inputLine:
+					cSpl = inputLine.count(':')
+					if cSpl==1:
+						cl = 'mn'
+						name, value = inputLine.split(':', 1)
+					elif cSpl>1:
+						cl, name, value = inputLine.split(':', 2)
+					else: continue
+					if cl=='mn':
+						it.cfg[name] = value
+					elif cl=='ui':
+						ui.cfg[name] = value
+			it.lastcfg = it.cfg.copy(), ui.cfg.copy()
+		else:
+			it.lastcfg = None
+		for keyD in('FitW', 'FitH'):
+			if it.cfg.has_key(keyD):
+				try:
+					value = int(it.cfg[keyD])
+					getattr(ui, keyD).set_value(value)
+				except ValueError:
+					it.cfg.pop(keyD)
+		ui.restoreGeometry()
+
+	def appCfgStore(it, cfgFn):
+		ui = it.ui
+		ui.storeGeometry()
+		cfgDir = ph.dirname(cfgFn)
+		for keyD in('FitW', 'FitH'):
+			it.cfg[keyD] = "%i" % getattr(ui, keyD).get_value()
+		from os import makedirs
+		if not(ph.isdir(cfgDir)):
+			makedirs(cfgDir, 0o755)
+		if it.lastcfg!=(it.cfg, ui.cfg):
+			hFileCfg = open(cfgFn, 'w')
+			for cfg in it.cfg.keys():
+				hFileCfg.write("mn:%s:%s\n" % (cfg, it.cfg[cfg]))
+			for cfg in ui.cfg.keys():
+				hFileCfg.write("ui:%s:%s\n" % (cfg, ui.cfg[cfg]))
+			hFileCfg.close()
+			print("Written config:%s...\n" % it.uiFn(cfgFn))
+
+	def appStart(it):
+		it.initVars()
+		it.appCfgLoad()
+		it.appUpdateFilename(bUpEmptyTxt=False)
+		it.ui.uiEnter()
+
+	appStop = lambda it: it.appCfgStore(it.cfgFileName)
+
+	def appExitEvent(it, window, event):
+		it.Exit()
+
+	def Exit(it):
+		print("Exiting...\n")
+		from gobject import source_remove as unWatch
+		unWatch(it.tickLogic)
+		it.appStop()
+		it.ui.uiExit()
+
+if __name__=='__main__':
+	test = KiCADimportSVG()
+
