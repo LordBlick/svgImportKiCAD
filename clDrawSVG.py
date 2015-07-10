@@ -195,6 +195,100 @@ class Poly(list):
 
 	clone = lambda self: Poly(self)
 
+class Bezier:
+	'''Bezier curve class
+	A Bezier curve is defined by its control points
+	Its dimension is equal to the number of control points
+	Note that SVG only support dimension 3 and 4 Bezier curve, respectively
+	Quadratic and Cubic Bezier curve
+	Based on https://github.com/cjlano/svg - the idea of  CJlano < cjlano @ free.fr >
+	'''
+	def __init__(self, pts):
+		self.pts = list(pts)
+		self.dimension = len(pts)
+
+	def __str__(self):
+		return 'Bezier' + str(self.dimension) + \
+				' : ' + ", ".join([str(x) for x in self.pts])
+
+	def control_point(self, n):
+		if n >= self.dimension:
+			raise LookupError('Index is larger than Bezier curve dimension')
+		else:
+			return self.pts[n]
+
+	def rlength(self):
+		'''Rough Bezier length: length of control point segments'''
+		pts = list(self.pts)
+		l = 0.0
+		p1 = pts.pop()
+		while pts:
+			p2 = pts.pop()
+			l += Segment(p1, p2).length()
+			p1 = p2
+		return l
+
+	def bbox(self):
+		return self.rbbox()
+
+	def rbbox(self):
+		'''Rough bounding box: return the bounding box (P1,P2) of the Bezier
+		_control_ points'''
+		xmin = min([p.x for p in self.pts])
+		xmax = max([p.x for p in self.pts])
+		ymin = min([p.y for p in self.pts])
+		ymax = max([p.y for p in self.pts])
+
+		return (Point(xmin,ymin), Point(xmax,ymax))
+
+	def segments(self, precision=0):
+		'''Return a polyline approximation ("segments") of the Bezier curve
+		precision is the minimum significative length of a segment'''
+		segments = []
+		# n is the number of Bezier points to draw according to precision
+		if precision != 0:
+			n = int(self.rlength() / precision) + 1
+		else:
+			n = 1000
+		if n < 10: n = 10
+		if n > 1000 : n = 1000
+
+		for t in range(0, n+1):
+			segments.append(self._bezierN(float(t)/n))
+		return segments
+
+	def _bezier1(self, p0, p1, t):
+		'''Bezier curve, one dimension
+		Compute the Point corresponding to a linear Bezier curve between
+		p0 and p1 at "time" t '''
+		pt = p0 + t * (p1 - p0)
+		return pt
+
+	def _bezierN(self, t):
+		'''Bezier curve, Nth dimension
+		Compute the point of the Nth dimension Bezier curve at "time" t'''
+		# We reduce the N Bezier control points by computing the linear Bezier
+		# point of each control point segment, creating N-1 control points
+		# until we reach one single point
+		res = list(self.pts)
+		# We store the resulting Bezier points in res[], recursively
+		for n in range(self.dimension, 1, -1):
+			# For each control point of nth dimension,
+			# compute linear Bezier point a t
+			for i in range(0,n-1):
+				res[i] = self._bezier1(res[i], res[i+1], t)
+		return res[0]
+
+	def transform(self, matrix):
+		self.pts = [matrix * x for x in self.pts]
+
+	def scale(self, ratio):
+		self.pts = [x * ratio for x in self.pts]
+	def translate(self, offset):
+		self.pts = [x + offset for x in self.pts]
+	def rotate(self, angle):
+		self.pts = [x.rot(angle) for x in self.pts]
+
 class drawPrim:
 	def initDrawPrim(self):
 		self.points = Poly()

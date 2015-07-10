@@ -33,6 +33,8 @@ class KiCADimportSVG:
 		ui.mainWindow.connect("destroy", lambda x: it.Exit())
 		ui.mainWindow.connect("delete_event", it.appExitEvent)
 		ui.uiHideDlg(ui.dlgPath, bStore=False)
+		global _p
+		_p = lambda s, tag=None: ui.logView.insert_end(s, tag)
 		return
 
 	def errReport(it, txt):
@@ -143,15 +145,14 @@ class KiCADimportSVG:
 
 	def appSvgParse(it, svgFileName):
 		from xml.dom.minidom import parse as mdparse
-		from geometry import Bezier
+		from clDrawSVG import Bezier
 		from Colors import floatColorHTML
 		
 		ui = it.ui
-		_pr = ui.logView.insert_end
 		svgTree = mdparse(svgFileName)
 		arcErr = 'Arc parsing failure'
 		if not svgTree:
-			_pr("There\'s some I/O errors occured in parsing %s…\n" % svgFileName)
+			_p("There\'s some I/O errors occured in parsing %s…\n" % svgFileName)
 			return
 		ui.Display.drawer.clear()
 		svgMain = svgTree.documentElement
@@ -172,8 +173,8 @@ class KiCADimportSVG:
 				mode='path'
 			else:
 				mode=''
-			#_pr("fill:%s; stroke:%s\n" % (fill, stroke))
-			_pr("Found path with style: '%s'\n" % dcStyle)
+			#_p("fill:%s; stroke:%s\n" % (fill, stroke))
+			_p("Found path with style: '%s'\n" % dcStyle)
 			if not(dpath.hasAttribute('d')):
 				continue
 			lsItems = Poly()
@@ -253,19 +254,19 @@ class KiCADimportSVG:
 					flags = lsPathD.pop().strip()  # Arc flags are not necesarily sepatated numbers
 					large_arc_flag = flags[0]
 					if large_arc_flag not in '01':
-						_pr("%s - strange large_arc_flag '%s'\n" % (arcErr, large_arc_flag))
+						_p("%s - strange large_arc_flag '%s'\n" % (arcErr, large_arc_flag))
 						break
 					if len(flags) > 1:  flags = flags[1:].strip()
 					else:               flags = lsPathD.pop().strip()
 					sweep_flag = flags[0]
 					if sweep_flag not in '01':
-						_pr("%s - strange sweep_flag '%s'\n" % (arcErr, sweep_flag))
+						_p("%s - strange sweep_flag '%s'\n" % (arcErr, sweep_flag))
 						break
 					if len(flags) > 1:  x = flags[1:]
 					else:               x = lsPathD.pop()
 					y = lsPathD.pop()
 					# TODO
-					_pr("ARC:\n\trx:%s, ry:%s, xrot:%s, large_arc_flag:%s, sweep_flag:%s, x:%s, y:%s\n" %
+					_p("ARC:\n\trx:%s, ry:%s, xrot:%s, large_arc_flag:%s, sweep_flag:%s, x:%s, y:%s\n" %
 						(rx, ry, xrot, large_arc_flag, sweep_flag, x, y))
 					#lsItems.append(
 						#Arc(rx, ry, xrot, large_arc_flag, sweep_flag, Pnt(x, y)))
@@ -282,14 +283,14 @@ class KiCADimportSVG:
 					p_max = pTst.max_(p_max)
 			fit_scale = (p_max-p_min).min_scale(Pnt(ui.FitW.get_value(), ui.FitH.get_value()))
 			for idi, ditem in enumerate(lsItems):
-				#_pr("\tItem[%i]:%s\n" % (idi, str(ditem)))
+				#_p("\tItem[%i]:%s\n" % (idi, str(ditem)))
 				if not(False in(map(lambda Cl: isinstance(Cl, Pnt), ditem))):
 					if not(newPoly):
 						newPoly = DrawPolyPath()
 						newPoly.ID = "Poly#%i" % idx
 						ui.Display.drawer.draws.append(newPoly)
 					newPrim = drawPolygon([pt*fit_scale for pt in ditem])
-					#_pr("\tprim[%i]:%s\n" % (idi, str(newPrim.points)))
+					#_p("\tprim[%i]:%s\n" % (idi, str(newPrim.points)))
 					newPrim.fillColorA = tuple(fill)
 					newPrim.ID = "Prim#%i-%i" % (idx, idi)
 					newPoly.addPrim(newPrim)
@@ -345,34 +346,35 @@ class KiCADimportSVG:
 				it.appUpdateFilename()
 
 	def appCommitToPCB(it):
-		from pcbnew import ZONE_CONTAINER, LAYER_ID_COUNT, BOARD_GetStandardLayerName, FromMils
-		lsLayers = tuple([(idl, BOARD_GetStandardLayerName(idl)) for idl in range(LAYER_ID_COUNT)])
-		layerName2ID = lambda txtLayer: dict(map(reversed, lsLayers)).get(txtLayer)
+		from pcbnew import ZONE_CONTAINER, LAYER_ID_COUNT, BOARD_GetStandardLayerName, FromMils, BOARD
+		layer_names = tuple(BOARD_GetStandardLayerName(n) for n in range(LAYER_ID_COUNT))
+		layerId = lambda s: layer_names.index(s) if s in layer_names else None
 		ui = it.ui
-		_pr = ui.logView.insert_end
 		uiFn = it.uiFn
+		_p("pass#1…\n")
 		if it.cfg.has_key('lastPcbFile'):
 			fileNamePCB = it.cfg['lastPcbFile']
 			fileNameBk = it.bkFn(fileNamePCB)
 			uiFnPCB = uiFn(fileNamePCB)
+			_p("Trying to save %s…\n" % fileNamePCB)
 			try:
 				pcb = LoadBoard(fileNamePCB)
 			except Exception as err:
-				it.errReport(("Unrecognized data found. Checkout that file:\n"+\
-					"\t'%s'\nError message:\n\t%s\n") % (uiFnPCB, err))
-				return
+				pcb = BOARD()
 			lsDraws = ui.Display.drawer.draws
+			if not(lsDraws):
+				_p("Draw List empty!\n")
 			for draw in lsDraws:
 				if isinstance(draw, DrawPolyPath):
 					zone = ZONE_CONTAINER(pcb)
-					zone.SetLayer(layerName2ID(u'F.SilkS'))
+					zone.SetLayer(layerId(u'F.SilkS'))
 					otl = zone.Outline()
-					otl.SetLayer(layerName2ID(u'F.SilkS'))
+					otl.SetLayer(layerId(u'F.SilkS'))
 					for prim in draw.prims:
 						if isinstance(prim, drawPolygon):
-							#_pr("Enjoy new prm: %s\n" % prim)
+							#_p("Enjoy new prm: %s\n" % prim)
 							for pnt in prim.points:
-								#_pr("Enjoy new point: (%i, %i)\n" % tuple(pnt.wxPnt()))
+								#_p("Enjoy new point: (%i, %i)\n" % tuple(pnt.wxPnt()))
 								#zone.AppendCorner(pnt.wxPnt())
 								otl.AppendCorner(*pnt.wxPnt())
 							otl.CloseLastContour()
@@ -388,17 +390,17 @@ class KiCADimportSVG:
 					"\t'%s'\nError message:\n\t%s\n" % (fileNamePCB, err))
 				it.appRestore()
 				return
-			_pr("Saved in file:\n\t'%s'\nBackup in file:\n\t'%s'\n"% \
+			_p("Saved in file:\n\t'%s'\nBackup in file:\n\t'%s'\n"% \
 				(uiFn(fileNamePCB), uiFn(fileNameBk)))
 			it.appUpdateFilename()
+		return
 
 	def Test(it):
 		ui = it.ui
-		_pr = ui.logView.insert_end
 		testDraw = ui.Display.drawer.draws[0]
-		_pr("\tItem[%s]:%s\n" % (testDraw.ID, str(testDraw.bounds)))
+		_p("\tItem[%s]:%s\n" % (testDraw.ID, str(testDraw.bounds)))
 		for idi, testPrim in enumerate(testDraw.prims):
-			_pr("\t\tPrim[%i]:%s\n" % (idi, str(testPrim.bounds)))
+			_p("\t\tPrim[%i]:%s\n" % (idi, str(testPrim.bounds)))
 		
 
 	def appSvgLoad(it):
