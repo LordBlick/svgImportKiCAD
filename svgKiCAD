@@ -282,6 +282,7 @@ class KiCADimportSVG:
 					p_min = pTst.min_(p_min)
 					p_max = pTst.max_(p_max)
 			fit_scale = (p_max-p_min).min_scale(Pnt(ui.FitW.get_value(), ui.FitH.get_value()))
+			#TODO: Split non-ovelaped regions to separate DrawPolyPath
 			for idi, ditem in enumerate(lsItems):
 				#_p("\tItem[%i]:%s\n" % (idi, str(ditem)))
 				if not(False in(map(lambda Cl: isinstance(Cl, Pnt), ditem))):
@@ -351,7 +352,6 @@ class KiCADimportSVG:
 		layerId = lambda s: layer_names.index(s) if s in layer_names else None
 		ui = it.ui
 		uiFn = it.uiFn
-		_p("pass#1…\n")
 		if it.cfg.has_key('lastPcbFile'):
 			fileNamePCB = it.cfg['lastPcbFile']
 			fileNameBk = it.bkFn(fileNamePCB)
@@ -364,6 +364,7 @@ class KiCADimportSVG:
 			lsDraws = ui.Display.drawer.draws
 			if not(lsDraws):
 				_p("Draw List empty!\n")
+				return
 			for draw in lsDraws:
 				if isinstance(draw, DrawPolyPath):
 					zone = ZONE_CONTAINER(pcb)
@@ -393,7 +394,6 @@ class KiCADimportSVG:
 			_p("Saved in file:\n\t'%s'\nBackup in file:\n\t'%s'\n"% \
 				(uiFn(fileNamePCB), uiFn(fileNameBk)))
 			it.appUpdateFilename()
-		return
 
 	def Test(it):
 		ui = it.ui

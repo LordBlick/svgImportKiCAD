@@ -4,7 +4,6 @@
 # -*- tabstop: 4 -*-
 
 import math
-import collections
 from colorsys import hsv_to_rgb, hls_to_rgb, rgb_to_hsv, rgb_to_hls
 
 # matplotlib color maps, loaded on-demand
